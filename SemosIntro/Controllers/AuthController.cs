@@ -1,8 +1,12 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.IdentityModel.Tokens;
 using SemosIntro.Constants;
 using SemosIntro.Models;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 
 namespace SemosIntro.Controllers
 {
@@ -12,11 +16,13 @@ namespace SemosIntro.Controllers
     {
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly UserManager<IdentityUser> _userManager;
+        private readonly IConfiguration _configuration;
 
-        public AuthController(RoleManager<IdentityRole> roleManager, UserManager<IdentityUser> userManager)
+        public AuthController(RoleManager<IdentityRole> roleManager, UserManager<IdentityUser> userManager, IConfiguration configuration)
         {
             _roleManager = roleManager;
             _userManager = userManager;
+            _configuration = configuration;
         }
 
         [HttpPost("SeedRoles")]
@@ -69,6 +75,59 @@ namespace SemosIntro.Controllers
             await _userManager.AddToRoleAsync(newUser, StaticUserRoles.USER);
 
             return Ok("User created");
+        }
+
+        [HttpPost("Login")]
+        public async Task<IActionResult> Login(LoginRequest request)
+        {
+            IdentityUser? user = await _userManager.FindByEmailAsync(request.Email);
+
+            if (user is null)
+            {
+                return Unauthorized("Invalid credentials");
+            }
+
+            bool isPasswordCorrect = await _userManager.CheckPasswordAsync(user, request.Password);
+
+            if (isPasswordCorrect is false)
+            {
+                return Unauthorized("Invalid credentials");
+            }
+
+            IList<string> userRoles = await _userManager.GetRolesAsync(user);
+
+            List<Claim> authClaims = new List<Claim>
+            {
+                new Claim(JwtRegisteredClaimNames.Name, user.UserName ?? ""),
+                new Claim(JwtRegisteredClaimNames.Sub, user.Id),
+                new Claim("email", user.Email ?? "")
+            };
+
+            foreach (string userRole in userRoles)
+            {
+                authClaims.Add(new Claim("roles", userRole));
+            }
+
+            string token = GenerateNewJsonWebToken(authClaims);
+
+            return Ok(token);
+        }
+
+        private string GenerateNewJsonWebToken(List<Claim> claims)
+        {
+            SymmetricSecurityKey authSecret = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JwtOptions:SecretKey"]!));
+
+            JwtSecurityToken tokenObject = new JwtSecurityToken(
+                    issuer: _configuration["JwtOptions:Issuer"],
+                    audience: _configuration["JwtOptions:Audience"],
+                    expires: DateTime.Now.AddHours(1),
+                    claims: claims,
+                    signingCredentials: new SigningCredentials(authSecret, SecurityAlgorithms.HmacSha256) // cryptographic algorithm
+                );
+
+            string token = new JwtSecurityTokenHandler().WriteToken(tokenObject);
+
+            return token;
         }
     }
 }
